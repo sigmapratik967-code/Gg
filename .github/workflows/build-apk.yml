@@ -24,33 +24,71 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      # GitHub's ubuntu runner already ships an Android SDK.
-      # We only accept its licences and add the two packages we need.
+      # The project can live at the repo root (android/ folder present)
+      # or be uploaded as a zip. Either way we find it and export PROJECT_DIR.
+      - name: Locate project
+        run: |
+          set -e
+          if [ -f android/app/build.gradle.kts ]; then
+            echo "PROJECT_DIR=$PWD" >> "$GITHUB_ENV"
+            echo "Found project at repository root"
+            exit 0
+          fi
+
+          ZIP="$(ls -1 *.zip 2>/dev/null | head -1 || true)"
+          if [ -z "$ZIP" ]; then
+            echo "::error::No android/ folder and no .zip file in the repository root. Upload voidxen-launcher.zip or the project files."
+            ls -la
+            exit 1
+          fi
+
+          echo "Extracting $ZIP"
+          rm -rf /tmp/proj && mkdir -p /tmp/proj
+          unzip -q -o "$ZIP" -d /tmp/proj
+
+          FOUND="$(find /tmp/proj -maxdepth 6 -path '*/android/app/build.gradle.kts' -print -quit || true)"
+          if [ -z "$FOUND" ]; then
+            echo "::error::No android/app/build.gradle.kts inside $ZIP"
+            find /tmp/proj -maxdepth 4 | head -40
+            exit 1
+          fi
+
+          PROJ="$(dirname "$(dirname "$(dirname "$FOUND")")")"
+          echo "PROJECT_DIR=$PROJ" >> "$GITHUB_ENV"
+          echo "Project extracted to $PROJ"
+
       - name: Prepare Android SDK
         run: |
           set -e
-          if [ ! -d "$ANDROID_SDK_ROOT" ]; then
-            echo "SDK not found at $ANDROID_SDK_ROOT"; ls -la /usr/local/lib/android || true; exit 1
-          fi
+          cd "$PROJECT_DIR"
           SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKMANAGER" ]; then
             SDKMANAGER="$(find "$ANDROID_SDK_ROOT" -name sdkmanager -type f | head -1)"
           fi
           echo "sdkmanager: $SDKMANAGER"
-          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          ( yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 ) || true
           "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
+          mkdir -p android
           echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
 
       - name: Sync launcher assets
         run: |
-          mkdir -p android/app/src/main/assets/config
-          cp index.html android/app/src/main/assets/index.html
-          cp config/servers.json config/update.json android/app/src/main/assets/config/
+          set -e
+          cd "$PROJECT_DIR"
+          if [ -f index.html ] && [ -d config ]; then
+            mkdir -p android/app/src/main/assets/config
+            cp index.html android/app/src/main/assets/index.html
+            cp config/servers.json android/app/src/main/assets/config/
+            if [ -f config/update.json ]; then cp config/update.json android/app/src/main/assets/config/; fi
+            echo "Assets synced"
+          else
+            echo "index.html/config not found, keeping assets already in the APK project"
+          fi
 
       - name: Build debug APK
-        working-directory: android
         run: |
           set -e
+          cd "$PROJECT_DIR/android"
           if [ ! -f gradlew ]; then
             echo "gradlew missing, generating the wrapper"
             if ! command -v gradle > /dev/null; then
@@ -68,14 +106,14 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: voidxen-launcher-debug
-          path: android/app/build/outputs/apk/debug/*.apk
+          path: ${{ env.PROJECT_DIR }}/android/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
 
       - name: Attach APK to release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: android/app/build/outputs/apk/debug/*.apk
+          files: ${{ env.PROJECT_DIR }}/android/app/build/outputs/apk/debug/*.apk
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
