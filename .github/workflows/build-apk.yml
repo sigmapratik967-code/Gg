@@ -67,20 +67,27 @@ jobs:
           fi
           echo "sdkmanager: $SDKMANAGER"
           ( yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 ) || true
-          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" || true
           mkdir -p android
           echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
+          echo "--- installed platforms ---"
+          ls "$ANDROID_SDK_ROOT/platforms" || true
+          echo "--- installed build-tools ---"
+          ls "$ANDROID_SDK_ROOT/build-tools" || true
 
       - name: Sync launcher assets
         run: |
           set -e
           cd "$PROJECT_DIR"
           if [ -f index.html ] && [ -d config ]; then
-            mkdir -p android/app/src/main/assets/config
+            mkdir -p android/app/src/main/assets/config android/app/src/main/assets/wallpapers android/app/src/main/assets/music
             cp index.html android/app/src/main/assets/index.html
             cp config/servers.json android/app/src/main/assets/config/
             if [ -f config/update.json ]; then cp config/update.json android/app/src/main/assets/config/; fi
+            if [ -d wallpapers ]; then cp wallpapers/*.png android/app/src/main/assets/wallpapers/ 2>/dev/null || true; fi
+            if [ -d music ]; then cp music/*.wav android/app/src/main/assets/music/ 2>/dev/null || true; fi
             echo "Assets synced"
+            du -sh android/app/src/main/assets
           else
             echo "index.html/config not found, keeping assets already in the APK project"
           fi
@@ -100,7 +107,19 @@ jobs:
             gradle wrapper --gradle-version 8.5
           fi
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+
+          echo "=== building ==="
+          if ./gradlew assembleDebug --no-daemon --stacktrace > /tmp/build.log 2>&1; then
+            echo "BUILD OK"
+            tail -12 /tmp/build.log
+          else
+            echo "::error::Gradle build failed - real error lines below"
+            echo "=========== ERROR LINES ==========="
+            grep -nE "^e: |error:|Error:|FAILURE:|What went wrong|Caused by|Could not|Unresolved|AAPT|resource .* not found|Failed to find target|requires (JDK|Java)" /tmp/build.log | head -40 || true
+            echo "=========== LAST 50 LINES ==========="
+            tail -50 /tmp/build.log
+            exit 1
+          fi
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
