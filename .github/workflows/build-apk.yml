@@ -10,6 +10,10 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    env:
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -20,27 +24,45 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # GitHub's ubuntu runner already ships an Android SDK.
+      # We only accept its licences and add the two packages we need.
+      - name: Prepare Android SDK
+        run: |
+          set -e
+          if [ ! -d "$ANDROID_SDK_ROOT" ]; then
+            echo "SDK not found at $ANDROID_SDK_ROOT"; ls -la /usr/local/lib/android || true; exit 1
+          fi
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKMANAGER" ]; then
+            SDKMANAGER="$(find "$ANDROID_SDK_ROOT" -name sdkmanager -type f | head -1)"
+          fi
+          echo "sdkmanager: $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null 2>&1 || true
+          "$SDKMANAGER" "platform-tools" "platforms;android-34" "build-tools;34.0.0" > /dev/null 2>&1 || true
+          echo "sdk.dir=$ANDROID_SDK_ROOT" > android/local.properties
 
-      - name: Sync launcher assets into the Android project
+      - name: Sync launcher assets
         run: |
           mkdir -p android/app/src/main/assets/config
           cp index.html android/app/src/main/assets/index.html
           cp config/servers.json config/update.json android/app/src/main/assets/config/
 
-      - name: Grant execute permission to gradlew
-        run: chmod +x android/gradlew || true
-
       - name: Build debug APK
         working-directory: android
         run: |
-          if [ -f gradlew ]; then
-            ./gradlew assembleDebug --no-daemon
-          else
+          set -e
+          if [ ! -f gradlew ]; then
+            echo "gradlew missing, generating the wrapper"
+            if ! command -v gradle > /dev/null; then
+              echo "gradle CLI not found, downloading it"
+              curl -sSL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.5-bin.zip
+              unzip -q /tmp/gradle.zip -d "$HOME/gradle-dist"
+              export PATH="$HOME/gradle-dist/gradle-8.5/bin:$PATH"
+            fi
             gradle wrapper --gradle-version 8.5
-            ./gradlew assembleDebug --no-daemon
           fi
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
